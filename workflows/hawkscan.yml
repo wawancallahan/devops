@@ -1,0 +1,25 @@
+name: HawkScan
+
+on:
+  workflow_call:
+    inputs:
+      config_file:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+    secrets:
+      api_key:
+        required: true
+jobs:
+  call-dast:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone repo
+        uses: actions/checkout@v3
+      - name: Run HawkScan
+        uses: stackhawk/hawkscan-action@${{ inputs.version }}
+        with:
+          apiKey: ${{ secrets.api_key }}
+          configurationFiles: ${{ inputs.config_file }}

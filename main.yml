@@ -1,0 +1,75 @@
+name: Deploy
+
+on:
+  push:
+    tags:
+      - v*-dev
+      - v*-staging
+      - v*-prod
+
+jobs:
+  define:
+    runs-on: ubuntu-latest
+
+    outputs:
+      Branch: ${{ steps.Branch.outputs.value }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Get branch for the tag
+        id: get-branch
+        run: |
+          TAG_NAME=$(echo "${GITHUB_REF}" | sed 's/refs\/tags\///')
+          echo "GITHUB_REF: ${GITHUB_REF}"
+          echo "Extracted TAG_NAME: ${TAG_NAME}"
+
+          # Fetch all branches as git branch command will not show all git branch available in the repo
+          git fetch --all
+
+          # Get the branches containing the tag
+          BRANCH_NAME=$(git branch -r --contains "${TAG_NAME}" | sed -n 1p | sed 's/.*origin\///')
+          echo "Extracted BRANCH_NAME: ${BRANCH_NAME}"
+
+          echo "branch=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG_NAME}" >> $GITHUB_OUTPUT          
+
+      - name: Print branch and tag name
+        run: |
+          echo "Branch: ${{ steps.get-branch.outputs.branch }}"
+          echo "Tag: ${{ steps.get-branch.outputs.tag }}"
+
+  docker:               
+    uses: reusable-workflow/dry-workflows/.gitea/workflows/docker-build-push.yml@latest
+    secrets:
+      cr_username: ${{ secrets.CR_USERNAME }}
+      cr_token: ${{ secrets.CR_TOKEN }}
+
+  development:
+    needs: docker
+    if: (endsWith(github.event.ref, 'dev'))
+    uses: reusable-workflow/dry-workflows/.gitea/workflows/swarm-deploy.yml@latest
+    secrets:
+      cr_username: ${{ secrets.CR_USERNAME }}
+      cr_token: ${{ secrets.CR_TOKEN }}
+      pat: ${{ secrets.PAT }}
+
+  staging:
+    needs: docker
+    if: (endsWith(github.event.ref, 'staging'))
+    uses: reusable-workflow/dry-workflows/.gitea/workflows/swarm-deploy.yml@latest
+    secrets:
+      cr_username: ${{ secrets.CR_USERNAME }}
+      cr_token: ${{ secrets.CR_TOKEN }}
+      pat: ${{ secrets.PAT }}
+
+
+  production:
+    needs: docker
+    if: (endsWith(github.event.ref, 'prod'))
+    uses: reusable-workflow/dry-workflows/.gitea/workflows/swarm-deploy.yml@latest
+    secrets:
+      cr_username: ${{ secrets.CR_USERNAME }}
+      cr_token: ${{ secrets.CR_TOKEN }}
+      pat: ${{ secrets.PAT }}

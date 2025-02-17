@@ -1,0 +1,51 @@
+name: Netlify
+
+on:
+  workflow_call:
+    inputs:
+      NETLIFY_SITE_ID:
+        required: false
+        type: string
+      runner_label:
+        required: true
+        type: string
+    secrets:
+      NETLIFY_AUTH_TOKEN:
+        required: true
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      runner: ${{ steps.runner.outputs.runner }}
+
+    steps:
+    - id: runner
+      run: echo "::set-output name=runner::{{ inputs.runner }}"
+
+  netlify:
+    needs: setup
+    runs-on: ${{ needs.build.outputs.runner }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Use Node.js 12.20
+        uses: actions/setup-node@master
+        with:
+          node-version: 12.20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build react
+        run: CI=false npm run build --if-present
+
+      - name: Deploy to netlify
+        uses: netlify/actions/cli@master
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ inputs.NETLIFY_SITE_ID }}
+        with:
+          args: deploy --dir=build --prod

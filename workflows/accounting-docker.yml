@@ -1,0 +1,143 @@
+name: Build Docker Image
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: 'Name of service/web app'
+        required: false
+        type: string
+ 
+    secrets:
+      cr_username:
+        required: true
+      cr_token:
+        required: true
+    
+env:
+  SERVICE_NAME: ${{ inputs.service_name || github.event.repository.name  }}
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+
+    outputs:
+      imageTag: ${{ steps.meta.outputs.tags }}
+      nodeBase: ${{ steps.manifest.outputs.node_bases }}
+      targetPort: ${{ steps.manifest.outputs.target_port }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set manifest deployment
+        id: manifest
+        run: |
+          cd .gitea/deployment/templates/
+          if ${{endsWith(github.event.ref, 'prod')}}
+          then
+            manifest=$(cat production.yml)
+            echo "node_bases=$(echo "$manifest" | yq eval '.node_base_image' -)" >> $GITHUB_OUTPUT
+            echo "target_port=$(echo "$manifest" | yq eval '.target_port' -)" >> $GITHUB_OUTPUT
+          elif ${{endsWith(github.event.ref, 'prod-data')}}
+          then
+            manifest=$(cat production.yml)
+            echo "node_bases=$(echo "$manifest" | yq eval '.node_base_image' -)" >> $GITHUB_OUTPUT
+            echo "target_port=$(echo "$manifest" | yq eval '.target_port' -)" >> $GITHUB_OUTPUT
+          elif ${{endsWith(github.event.ref, 'dev')}}
+          then
+            manifest=$(cat development.yml)
+            echo "node_bases=$(echo "$manifest" | yq eval '.node_base_image' -)" >> $GITHUB_OUTPUT
+            echo "target_port=$(echo "$manifest" | yq eval '.target_port' -)" >> $GITHUB_OUTPUT
+          elif ${{endsWith(github.event.ref, 'dev-data')}}
+          then
+            manifest=$(cat development.yml)
+            echo "node_bases=$(echo "$manifest" | yq eval '.node_base_image' -)" >> $GITHUB_OUTPUT
+            echo "target_port=$(echo "$manifest" | yq eval '.target_port' -)" >> $GITHUB_OUTPUT
+          elif ${{endsWith(github.event.ref, 'staging')}}
+          then
+            manifest=$(cat staging.yml)
+            echo "node_bases=$(echo "$manifest" | yq eval '.node_base_image' -)" >> $GITHUB_OUTPUT
+            echo "target_port=$(echo "$manifest" | yq eval '.target_port' -)" >> $GITHUB_OUTPUT
+          elif ${{endsWith(github.event.ref, 'ops')}}
+          then
+            manifest=$(cat operation.yml)
+            echo "node_bases=$(echo "$manifest" | yq eval '.node_base_image' -)" >> $GITHUB_OUTPUT
+            echo "target_port=$(echo "$manifest" | yq eval '.target_port' -)" >> $GITHUB_OUTPUT
+          else
+            manifest=$(cat release.yml)
+            echo "node_bases=$(echo "$manifest" | yq eval '.node_base_image' -)" >> $GITHUB_OUTPUT
+            echo "target_port=$(echo "$manifest" | yq eval '.target_port' -)" >> $GITHUB_OUTPUT
+          fi
+        
+      - name: define build command env
+        id: build_command
+        run: |
+            if ${{endsWith(github.event.ref, 'staging')}}
+            then
+             echo "command=staging" >> $GITHUB_OUTPUT
+            elif ${{endsWith(github.event.ref, 'prod')}}
+            then
+             echo "command=production" >> $GITHUB_OUTPUT
+            elif ${{endsWith(github.event.ref, 'prod-data')}}
+            then
+             echo "command=production" >> $GITHUB_OUTPUT
+            elif ${{endsWith(github.event.ref, 'ops')}}
+            then
+             echo "command=operation" >> $GITHUB_OUTPUT
+            else
+             echo "command=development" >> $GITHUB_OUTPUT
+            fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Docker Meta
+        id: meta
+        run: echo "::set-output name=tags::pinjammodal/${{ env.SERVICE_NAME }}:${GITHUB_REF#refs/*/}" 
+
+      - name: Notice meta
+        run: |
+          echo "::notice title=meta tag created::${{ steps.meta.outputs.tags }}"
+          echo "::notice title=manifest node_base created::${{ steps.manifest.outputs.node_bases }}"
+          echo "::notice title=manifest target_port created::${{ steps.manifest.outputs.target_port }}"
+
+
+      - name: Set Context Default
+        run: docker context use default
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2.0.0
+        with:
+          username: ${{ secrets.cr_username }} 
+          password: ${{ secrets.cr_token }}
+
+      - name: Build Docker
+        uses: docker/build-push-action@v3.1.1
+        with:
+          context: .
+          outputs: type=docker
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            NODE_BASE=${{ steps.manifest.outputs.node_bases }}
+            TARGET_PORT=${{ steps.manifest.outputs.target_port}}
+            FE_BUILD_ENV=${{ steps.build_command.outputs.command }}
+
+      - name: Check Build Result
+        run: |
+          docker images | grep ${{ env.SERVICE_NAME }} > tmp_docker
+          if grep -wq ${GITHUB_REF#refs/*/} tmp_docker; then echo "::notice title=image build verified::${{ steps.meta.outputs.tags }} image found" ; else echo "::error title=build error::${{ steps.meta.outputs.tags }} not found"; fi
+
+      - name: Push Docker Image to Container Registry
+        run: docker push ${{ steps.meta.outputs.tags }}
+      
+      - name: runner built image cleanup
+        run: |
+          docker image rm -f ${{ steps.meta.outputs.tags }}
+
+
+      # - name: Prune Images
+      #   run: |
+      #     docker context use default
+      #     docker image prune -a -f
+      #     docker rmi -f $(docker images -f "dangling=true" -q) || true

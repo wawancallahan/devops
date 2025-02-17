@@ -1,0 +1,20 @@
+name: Check pull request source branch
+on:
+  workflow_call:
+  
+jobs:
+  check-pr-branches:
+    # runs-on: ubuntu-latest
+    runs-on: [self-hosted]
+    steps:
+      - name: Check source branches
+        run: |
+          if  [ ${{ github.base_ref }} == "production" ] ; then
+            if  [ ${{startsWith(github.head_ref, 'feature')}} == "true" ] || [ ${{startsWith(github.head_ref, 'hotfix')}} == "true" ] ; then 
+              echo "Merge requests are permitted as the source branch is from feature or hotfix branch"
+            else 
+              echo "::notice title=Declining Merge Request::Merge requests cannot be done, see details"
+              echo "::error title=Declining Merge Request::Merge requests to production branch are forbidden as the PR only allowed to come from feature or hotfix branch"
+              exit 1
+            fi
+          fi

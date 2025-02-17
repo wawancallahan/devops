@@ -1,0 +1,148 @@
+name: Build Docker Image
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: 'Name of service/web app'
+        required: false
+        type: string
+      target_port:
+        required: false
+        type: number
+        default: 3300
+      env_file:
+        description: 'Use to load environment variable from file'
+        required: false
+        type: string
+      strict_scan:
+        required: false
+        type: string
+        default: true
+    secrets:
+      cr_username:
+        required: true
+      cr_token:
+        required: true
+      mantichor_client_id:
+        required: true
+      mantichor_client_token:
+        required: true
+      mantichor_url:
+        required: true
+      snyk_token:
+        required: true
+
+env:
+  SERVICE_NAME: ${{ inputs.service_name || github.event.repository.name  }}
+  STRICT_SCAN: ${{ inputs.strict_scan || false }}
+
+jobs:
+  fetch-prop:
+    runs-on: [self-hosted]
+
+    outputs:
+      base_image: ${{ steps.mantichor-agent.outputs.base_image }}
+      bypass_code_scan: ${{ steps.mantichor-agent.outputs.bypass_code_scan }}
+      repourl: ${{ steps.vars.outputs.repourl }}
+
+    steps:
+      - name: Set output repourl
+        id: vars
+        run: echo "repourl=${GITHUB_SERVER_URL}/${{github.repository}}" >> $GITHUB_OUTPUT
+
+      - name: mantichor-agent
+        id: mantichor-agent 
+        uses: mantichor/agent@latest
+        env:
+          mantichor_client_id: ${{secrets.mantichor_client_id}}
+          mantichor_client_token: ${{secrets.mantichor_client_token}}
+          mantichor_url: ${{secrets.mantichor_url}}
+          step: build
+          service_name: ${{ env.SERVICE_NAME }}
+          repository_name: ${{github.repository}}
+          repository_url: ${{ steps.vars.outputs.repourl }}
+          # target_env: ${{ needs.define.outputs.targetEnv }}
+          output_quote: true              
+
+
+  build-push:
+    needs: [fetch-prop]
+    runs-on: ubuntu-latest
+
+    outputs:
+      imageTag: ${{ steps.meta.outputs.tags }}
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - id: setJSON
+        run: echo "baseImageJSON=${{ needs.fetch-prop.outputs.manifest }}" >> $GITHUB_OUTPUT 
+
+      - name: read base_image from fetch-prop jobs
+        run: echo "${{needs.fetch-prop.outputs.base_image}}"
+
+      - name: Docker Meta
+        id: meta
+        run: echo "tags=pinjammodal/${{ env.SERVICE_NAME }}:${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT 
+
+      - name: define build command env
+        id: build_command
+        run: |
+          if ${{endsWith(github.event.base_ref, 'staging')}}
+          then
+           echo "command=staging" >> $GITHUB_OUTPUT
+          elif ${{endsWith(github.event.base_ref, 'production')}}
+          then
+           echo "command=production" >> $GITHUB_OUTPUT
+          else
+           echo "command=development" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Notice Meta
+        run: echo "::notice title=meta tag created::${{ steps.meta.outputs.tags }}"
+
+      - name: Notice Build Command
+        run: echo "::notice title=build command created::${{ steps.build_command.outputs.command }}"
+
+      - name: Set Context Default
+        run: docker context use default
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2.1.0
+        with:
+          username: ${{ secrets.cr_username }} 
+          password: ${{ secrets.cr_token }}
+
+      - name: Load Environment Variable
+        if: inputs.env_file != ''
+        run: source ${{ inputs.env_file }}
+
+      - name: Build Docker
+        uses: docker/build-push-action@v3.2.0
+        with:
+          context: .
+          outputs: type=docker
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            NODE_BASE=${{needs.fetch-prop.outputs.base_image}}
+            FE_BUILD_ENV=${{ steps.build_command.outputs.command }}
+
+      - name: Check Build Result
+        run: |
+          docker images | grep ${{ env.SERVICE_NAME }} > tmp_docker
+          if grep -wq ${GITHUB_REF#refs/*/} tmp_docker; then echo "::notice title=image build verified::${{ steps.meta.outputs.tags }} image found" ; else echo "::error title=build error::${{ steps.meta.outputs.tags }} not found"; fi
+      
+      - name: Push Docker Image to Container Registry
+        run: docker push ${{ steps.meta.outputs.tags }}
+
+      - name: runner built image cleanup
+        run: |
+          docker context use default
+          docker image rm -f ${{ steps.meta.outputs.tags }}
+          docker rmi -f $(docker images -f "dangling=true" -q) || true

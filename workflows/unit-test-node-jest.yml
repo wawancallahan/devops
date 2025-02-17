@@ -1,0 +1,37 @@
+name: Node.js CI using Jest
+
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        description: 'version of node js to run unit test'
+        required: false
+        type: string
+        default: 12
+      bypass_unit_test:
+        description: 'whether to skip unit test'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  node_version: ${{ inputs.node_version }}
+        
+jobs:
+  unit-test-node-jest:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.bypass_unit_test != 'true' }}
+    steps:
+    - name: Check out the code
+      uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ inputs.node_version }}
+
+    - name: Install dependencies
+      run: npm install
+
+    - name: Run Jest tests
+      run: npm run test:ci

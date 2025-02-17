@@ -1,0 +1,29 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD: password  # Plain string password
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - public  # Use external public network
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "user"]
+      interval: 10s
+      retries: 3
+      timeout: 5s
+
+volumes:
+  pg_data:
+
+networks:
+  public:
+    external: true  # Use an existing external network

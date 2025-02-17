@@ -1,0 +1,70 @@
+name: unit test orchestrator
+
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        description: 'version of node js to run unit test'
+        required: false
+        type: string
+        default: 12
+      bypass_unit_test:
+        description: 'whether to skip unit test'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  node_version: ${{ inputs.node_version }}
+      
+jobs:
+  check-stack: 
+    if: ${{ github.event.inputs.bypass_unit_test != 'true' }}
+    runs-on: [ubuntu-latest]
+    outputs:
+      stack_naming: ${{ steps.stack_check.outputs.stack_name }}
+    steps:
+    - name: Check out the code
+      uses: actions/checkout@v4
+
+    - name: node stack check
+      id: jest_check
+      run: |
+          if grep -q '"jest"' package.json; then
+          echo "jest_stack=true" >> $GITHUB_OUTPUT 
+          fi
+    - name: notify jest_stack value
+      run: echo "::notice title=jest_stack value::${{ steps.jest_check.outputs.jest_stack }}"
+      
+    - name: mocha stack check
+      id: mocha_check
+      run: |
+          if grep -q '"mocha"' package.json; then
+          echo "mocha_stack=true" >> $GITHUB_OUTPUT 
+          fi
+    - name: notify mocha_stack value
+      run: echo "::notice title=mocha_stack value::${{ steps.mocha_check.outputs.mocha_stack }}"
+      
+    - name: code stack check
+      id: stack_check
+      run: |
+          if ${{ steps.jest_check.outputs.jest_stack == 'true' }}  ; then
+            echo "stack_name=jest" >> $GITHUB_OUTPUT 
+          elif ${{ steps.mocha_check.outputs.mocha_stack == 'true' }} ; then
+            echo "stack_name=mocha" >> $GITHUB_OUTPUT 
+          else 
+            echo "stack_name=skiptest" >> $GITHUB_OUTPUT 
+          fi
+    - name: notify stack_name value
+      run: echo "::notice title=stack_name value::${{ steps.stack_check.outputs.stack_name }}"
+    
+    - name: notify unit test are skipped
+      if: ${{ steps.stack_name.outputs.stack_name == 'skiptest' }}
+      run: echo "::notice title=skipping unit test::can't find any unit test module"
+      
+  jest:
+    needs: check-stack
+    uses: fit-dev/dry-workflows/.github/workflows/unit-test-node-jest.yml@development
+    if: ${{ needs.define.outputs.stack_naming == 'jest' }}
+    with: 
+      node_version: ${{ github.event.inputs.node_version }}

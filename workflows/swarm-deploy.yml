@@ -1,0 +1,236 @@
+name: Deploy Service/Web App
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: 'Name of service/web app'
+        required: false
+        type: string
+    secrets:
+      cr_username:
+        required: true
+      cr_token:
+        required: true
+      pat:
+        requires: true
+
+env:
+  SERVICE_NAME: ${{ inputs.service_name || github.event.repository.name  }}
+
+jobs:
+
+  define:
+    runs-on: ubuntu-latest
+
+    outputs:
+      nodeEnv: ${{ steps.nodeEnv.outputs.value }}
+      publishedPort: ${{ steps.manifest.outputs.published_ports }}
+      targetPort: ${{ steps.manifest.outputs.target_ports }}
+      dockerContext: ${{ steps.manifest.outputs.docker_contexts }}
+      maxReplica: ${{ steps.manifest.outputs.max_replicas }}
+      imageTag: ${{ steps.meta.outputs.tags }}
+
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.pat }}        
+
+      - name: Set manifest deployment ### set variable for deployment process likes publish_port, targer_port, docker_context & max_replica) based on tag release 
+        id: manifest ### this action will check manifest deployment in service repo in directory .gitea/deployment/templates
+        run: |
+          cd .gitea/deployment/templates/
+          if ${{endsWith(github.event.ref, 'prod')}}
+          then
+            manifest=$(cat production.yml)
+            echo "published_ports=$(echo "$manifest" | yq eval '.published_port' -)" >> $GITHUB_OUTPUT
+            echo "target_ports=$(echo "$manifest" | yq eval '.target_port' -)" >> $GITHUB_OUTPUT
+            echo "docker_contexts=$(echo "$manifest" | yq eval '.docker_context' -)" >> $GITHUB_OUTPUT
+            echo "max_replicas=$(echo "$manifest" | yq eval '.max_replica' -)" >> $GITHUB_OUTPUT
+          elif ${{endsWith(github.event.ref, 'dev')}}
+          then
+            manifest=$(cat development.yml)
+            echo "published_ports=$(echo "$manifest" | yq eval '.published_port' -)" >> $GITHUB_OUTPUT
+            echo "target_ports=$(echo "$manifest" | yq eval '.target_port' -)" >> $GITHUB_OUTPUT
+            echo "docker_contexts=$(echo "$manifest" | yq eval '.docker_context' -)" >> $GITHUB_OUTPUT
+            echo "max_replicas=$(echo "$manifest" | yq eval '.max_replica' -)" >> $GITHUB_OUTPUT
+          elif ${{endsWith(github.event.ref, 'staging')}}
+          then
+            manifest=$(cat staging.yml)
+            echo "published_ports=$(echo "$manifest" | yq eval '.published_port' -)" >> $GITHUB_OUTPUT
+            echo "target_ports=$(echo "$manifest" | yq eval '.target_port' -)" >> $GITHUB_OUTPUT
+            echo "docker_contexts=$(echo "$manifest" | yq eval '.docker_context' -)" >> $GITHUB_OUTPUT
+            echo "max_replicas=$(echo "$manifest" | yq eval '.max_replica' -)" >> $GITHUB_OUTPUT
+          elif ${{endsWith(github.event.ref, 'ops')}}
+          then
+            manifest=$(cat operation.yml)
+            echo "published_ports=$(echo "$manifest" | yq eval '.published_port' -)" >> $GITHUB_OUTPUT
+            echo "target_ports=$(echo "$manifest" | yq eval '.target_port' -)" >> $GITHUB_OUTPUT
+            echo "docker_contexts=$(echo "$manifest" | yq eval '.docker_context' -)" >> $GITHUB_OUTPUT
+            echo "max_replicas=$(echo "$manifest" | yq eval '.max_replica' -)" >> $GITHUB_OUTPUT
+          else
+            manifest=$(cat release.yml)
+            echo "published_ports=$(echo "$manifest" | yq eval '.published_port' -)" >> $GITHUB_OUTPUT
+            echo "target_ports=$(echo "$manifest" | yq eval '.target_port' -)" >> $GITHUB_OUTPUT
+            echo "docker_contexts=$(echo "$manifest" | yq eval '.docker_context' -)" >> $GITHUB_OUTPUT
+            echo "max_replicas=$(echo "$manifest" | yq eval '.max_replica' -)" >> $GITHUB_OUTPUT
+          fi
+
+      - id: nodeEnv ### define build command env based on tag release
+        run: |
+          if ${{endsWith(github.event.ref, 'prod')}}
+          then
+            echo "value=production" >> $GITHUB_OUTPUT
+            echo "::notice title=NODE_ENV::production"
+          elif ${{endsWith(github.event.ref, 'staging')}}
+          then
+            echo "value=staging" >> $GITHUB_OUTPUT
+            echo "::notice title=NODE_ENV::staging"
+          elif ${{endsWith(github.event.ref, 'release')}}
+          then
+            echo "value=release" >> $GITHUB_OUTPUT
+            echo "::notice title=NODE_ENV::release"
+          elif ${{endsWith(github.event.ref, 'ops')}}
+          then
+            echo "value=release" >> $GITHUB_OUTPUT
+            echo "::notice title=NODE_ENV::operation"
+          else
+            echo "value=development" >> $GITHUB_OUTPUT
+            echo "::notice title=NODE_ENV::development"
+          fi
+
+      - name: Notice manifest ### set variabel to be args
+        run: |
+          echo "::notice title=manifest published_port created::${{ steps.manifest.outputs.published_ports }}"
+          echo "::notice title=manifest target_port created::${{ steps.manifest.outputs.target_ports }}"
+          echo "::notice title=manifest docker_context created::${{ steps.manifest.outputs.docker_contexts }}"
+          echo "::notice title=manifest max_replica created::${{ steps.manifest.outputs.max_replicas }}"    
+      
+  metadata:
+    runs-on: ubuntu-latest 
+
+    outputs:
+      imageTag: ${{ steps.meta.outputs.tags }}
+
+    steps:
+      - name: Docker Meta ### define image tag release to be pulled
+        id: meta
+        run: echo "tags=pinjammodal/${{ env.SERVICE_NAME }}:${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT 
+
+      - name: Notice Meta  ### set image tag relase to args
+        run: echo "::notice title=meta tag created::${{ steps.meta.outputs.tags }}"
+
+  swarm-deploy:
+    needs: [metadata, define]
+    runs-on: ubuntu-latest
+
+    steps:  
+      - name: Login to Docker Hub ### login to docker-hub image registry
+        uses: docker/login-action@v2.1.0
+        with:
+          username: ${{ secrets.cr_username }} 
+          password: ${{ secrets.cr_token }}
+      
+      - name: Set Context ### set docker-context based on environment (development,devops-central,be-prod,fe-prod)
+        run: docker context use ${{ needs.define.outputs.dockerContext }}
+
+      - name: Check stack ### check service if already existing or not
+        run: |
+            echo "SERVICE=$(docker service ls | grep -c ${{ env.SERVICE_NAME }}[[:space:]])" >> $GITHUB_ENV
+            echo "MAX_REPLICA=${{ needs.define.outputs.maxReplica }}" >> $GITHUB_ENV
+
+      - uses: actions/setup-node@v3
+        if: env.SERVICE == 0
+        with:
+          node-version: '12'
+          
+      - name: Check Service Network ### check docker public network 
+        if: env.SERVICE == 0
+        id: network
+        run: |
+          docker network ls > tmp
+          if grep -wq public tmp; then echo "::notice title=network exist::public network already exist" ; else echo "create=true" >> $GITHUB_OUTPUT; fi
+
+      - name: Create Service Network ### create public network if not existing
+        if: steps.network.outputs.create
+        run: docker network create -d overlay --attachable public
+
+      - name: Pull Images ### pull image tag release
+        run: docker pull ${{ needs.metadata.outputs.imageTag }}
+
+      - name: Stack deploy ### deploy and create service if not existing 
+        if: ((env.SERVICE == 0) && (env.MAX_REPLICA == 'null'))
+        run: | 
+          docker service create \
+              --replicas 0 \
+              --name ${{ env.SERVICE_NAME }} \
+              --rollback-parallelism 1 \
+              --rollback-delay 10s \
+              --rollback-order start-first \
+              --update-delay 10s \
+              --update-parallelism 1 \
+              --update-failure-action rollback \
+              --restart-condition on-failure \
+              --restart-delay 5s \
+              --restart-max-attempts 2 \
+              --env SERVICE_NAME=${{ env.SERVICE_NAME }} \
+              --env PORT=${{ needs.define.outputs.targetPort }} \
+              --env NODE_ENV=${{ needs.define.outputs.nodeEnv }} \
+              --network public \
+              --publish published=${{ needs.define.outputs.publishedPort }},target=${{ needs.define.outputs.targetPort }},mode=ingress \
+              --limit-cpu 1.0 \
+              --limit-memory 2048M \
+              --mount type=bind,source=/etc/timezone,target=/etc/timezone,readonly \
+              --mount type=bind,source=/etc/localtime,target=/etc/localtime,readonly \
+              --mount source=${{ env.SERVICE_NAME }}_logs,target=/usr/src/app/logs \
+              --mount source=${{ env.SERVICE_NAME }}_tmp,target=/usr/src/app/tmp \
+              ${{ needs.metadata.outputs.imageTag }}
+
+      - name: Stack deploy Max Replica ### deploy and create service if not existing (this is for service who need max_replica)
+        if: ((env.SERVICE == 0) && (env.MAX_REPLICA == 1))
+        run: |
+          docker service create \
+              --replicas 0 \
+              --replicas-max-per-node ${{ needs.define.outputs.maxReplica }} \
+              --name ${{ env.SERVICE_NAME }} \
+              --rollback-parallelism 1 \
+              --rollback-delay 10s \
+              --rollback-order start-first \
+              --update-delay 10s \
+              --update-parallelism 1 \
+              --update-failure-action rollback \
+              --restart-condition on-failure \
+              --restart-delay 5s \
+              --restart-max-attempts 2 \
+              --env SERVICE_NAME=${{ env.SERVICE_NAME }} \
+              --env PORT=${{ needs.define.outputs.targetPort }} \
+              --env NODE_ENV=${{ needs.define.outputs.nodeEnv }} \
+              --network public \
+              --publish published=${{ needs.define.outputs.publishedPort }},target=${{ needs.define.outputs.targetPort }},mode=ingress \
+              --limit-cpu 1.0 \
+              --limit-memory 2048M \
+              --mount type=bind,source=/etc/timezone,target=/etc/timezone,readonly \
+              --mount type=bind,source=/etc/localtime,target=/etc/localtime,readonly \
+              --mount source=${{ env.SERVICE_NAME }}_logs,target=/usr/src/app/logs \
+              --mount source=${{ env.SERVICE_NAME }}_tmp,target=/usr/src/app/tmp \
+              ${{ needs.metadata.outputs.imageTag }}
+
+      - name: Update current service ### update image version in portainer if service is already exist
+        if: ((env.SERVICE == 1) && (env.MAX_REPLICA == 'null'))
+        run: docker service update --health-retries 3 --health-interval 5s --limit-cpu 1.0 --limit-memory 2048M --with-registry-auth --image ${{ needs.metadata.outputs.imageTag }} ${{ env.SERVICE_NAME }}
+      
+      - name: Update current service max replica ### update image version in portainer if service is already exist (for service who needed max replica)
+        if: ((env.SERVICE == 1) && (env.MAX_REPLICA == 1))
+        run: docker service update --replicas-max-per-node 1 --health-retries 3 --health-interval 5s --limit-cpu 1.0 --limit-memory 2048M --with-registry-auth --image ${{ needs.metadata.outputs.imageTag }} ${{ env.SERVICE_NAME }}
+        
+      - name: Restore Docker Context To Default ### set docker context to default
+        if: always()
+        run: docker context use default
+      
+      - name: Remove Cache Jobs Pipeline ### clean cache workflow pipeline
+        if: always()
+        run: |
+          cd ~/.cache/act
+          rm -rf reusable-workflow-dry-workflows@latest
