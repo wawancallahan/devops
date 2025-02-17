@@ -1,0 +1,47 @@
+version: '3.9'
+
+services:
+  kong:
+    image: kong:3.1
+    environment:
+      KONG_DATABASE: "postgres"  # Enable PostgreSQL database
+      KONG_PG_HOST: "kong-postgres"  # Name of the PostgreSQL service
+      KONG_PG_PORT: 5432  # Default PostgreSQL port
+      KONG_PG_USER: kong  # PostgreSQL user
+      KONG_PG_PASSWORD: kong_password  # PostgreSQL password
+      KONG_PG_DATABASE: kong  # Database name for Kong
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PORT_MAPS: "8080:80,8443:443"  # HTTP/HTTPS ports
+    deploy:
+      replicas: 1  # Only 1 replica for Kong service
+      placement:
+        constraints:
+          - node.role == manager  # Ensure Kong runs only on manager nodes (optional)
+    ports:
+      - "8080:8000"  # Expose Kong's HTTP port
+      - "8443:8443"  # Expose Kong's HTTPS port
+    networks:
+      - kong_net  # Custom internal network
+    depends_on:
+      - kong-postgres  # Wait for PostgreSQL service to be available
+
+  kong-postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: kong
+      POSTGRES_PASSWORD: kong_password
+      POSTGRES_DB: kong  # Database for Kong
+    volumes:
+      - kong_db_data:/var/lib/postgresql/data  # Persist database data
+    networks:
+      - kong_net  # Same network as Kong
+    deploy:
+      replicas: 1  # Only 1 replica for PostgreSQL service
+
+volumes:
+  kong_db_data:  # Volume for persisting PostgreSQL data
+
+networks:
+  kong_net:
+    driver: overlay  # Overlay network for inter-container communication
